@@ -57,6 +57,7 @@ private:
 
 typedef RWLock<true> WriteLock;
 
+void uv_cond_init_checked(uv_cond_t* cond);
 void uv_mutex_init_checked(uv_mutex_t* mutex);
 void uv_rwlock_init_checked(uv_rwlock_t* lock);
 uv_loop_t* uv_default_loop_checked();
@@ -137,9 +138,12 @@ struct UV_LoopUserData
 UV_LoopUserData* GetLoopUserData(uv_loop_t* loop, bool create = true);
 
 template<typename T>
-void CallOnLoop(uv_loop_t* loop, T&& callback)
+bool CallOnLoop(uv_loop_t* loop, T&& callback)
 {
 	UV_LoopUserData* data = GetLoopUserData(loop, false);
+	if (!data) {
+		return false;
+	}
 
 	UV_LoopCallbackBase* cb = new UV_LoopCallback<T>(std::move(callback));
 	{
@@ -147,7 +151,27 @@ void CallOnLoop(uv_loop_t* loop, T&& callback)
 		data->m_callbacks.push_back(cb);
 	}
 
-	uv_async_send(data->m_async);
+	if (uv_async_send(data->m_async) == 0) {
+		return true;
+	}
+
+	// Clean up after uv_async_send error
+	bool found = false;
+	{
+		MutexLock lock(data->m_callbacksLock);
+
+		auto it = std::find(data->m_callbacks.begin(), data->m_callbacks.end(), cb);
+		if (it != data->m_callbacks.end()) {
+			found = true;
+			data->m_callbacks.erase(it);
+		}
+	}
+
+	if (found) {
+		delete cb;
+	}
+
+	return false;
 }
 
 } // namespace p2pool

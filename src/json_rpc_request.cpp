@@ -58,6 +58,8 @@ struct CurlContext
 
 	static void on_close(uv_handle_t* h);
 
+	void close_handles();
+
 	uv_poll_t m_pollHandle;
 	curl_socket_t m_socket;
 
@@ -76,6 +78,8 @@ struct CurlContext
 
 	std::vector<char> m_response;
 	std::string m_error;
+
+	curl_slist* m_headers;
 };
 
 CurlContext::CurlContext(const std::string& address, int port, const std::string& req, const std::string& auth, CallbackBase* cb, CallbackBase* close_cb, uv_loop_t* loop)
@@ -90,6 +94,7 @@ CurlContext::CurlContext(const std::string& address, int port, const std::string
 	, m_handle(nullptr)
 	, m_req(req)
 	, m_auth(auth)
+	, m_headers(nullptr)
 {
 	{
 		char buf[log::Stream::BUF_SIZE + 1];
@@ -177,6 +182,11 @@ CurlContext::CurlContext(const std::string& address, int port, const std::string
 	curl_easy_setopt_checked(m_handle, CURLOPT_CONNECTTIMEOUT, 1);
 	curl_easy_setopt_checked(m_handle, CURLOPT_TIMEOUT, 10);
 
+	m_headers = curl_slist_append(m_headers, "Content-Type: application/json");
+	if (m_headers) {
+		curl_easy_setopt_checked(m_handle, CURLOPT_HTTPHEADER, m_headers);
+	}
+
 	if (!m_auth.empty()) {
 		curl_easy_setopt_checked(m_handle, CURLOPT_HTTPAUTH, CURLAUTH_DIGEST | CURLAUTH_ONLY);
 		curl_easy_setopt_checked(m_handle, CURLOPT_USERPWD, m_auth.c_str());
@@ -202,6 +212,8 @@ CurlContext::~CurlContext()
 
 	(*m_closeCallback)(m_error.c_str(), m_error.length());
 	delete m_closeCallback;
+
+	curl_slist_free_all(m_headers);
 }
 
 int CurlContext::on_socket(CURL* /*easy*/, curl_socket_t s, int action)
@@ -235,10 +247,7 @@ int CurlContext::on_socket(CURL* /*easy*/, curl_socket_t s, int action)
 	case CURL_POLL_REMOVE:
 	default:
 		curl_multi_assign(m_multiHandle, s, nullptr);
-		uv_poll_stop(&m_pollHandle);
-		uv_close(reinterpret_cast<uv_handle_t*>(&m_async), on_close);
-		uv_close(reinterpret_cast<uv_handle_t*>(&m_timer), on_close);
-		uv_close(reinterpret_cast<uv_handle_t*>(&m_pollHandle), on_close);
+		close_handles();
 		break;
 	}
 
@@ -266,9 +275,13 @@ void CurlContext::on_timeout(uv_handle_t* req)
 {
 	CurlContext* ctx = reinterpret_cast<CurlContext*>(req->data);
 
-	int running_handles;
+	int running_handles = 0;
 	curl_multi_socket_action(ctx->m_multiHandle, CURL_SOCKET_TIMEOUT, 0, &running_handles);
 	ctx->check_multi_info();
+
+	if (running_handles == 0) {
+		ctx->close_handles();
+	}
 }
 
 size_t CurlContext::on_write(const void* buffer, size_t size, size_t count)
@@ -340,13 +353,29 @@ void CurlContext::on_close(uv_handle_t* h)
 	delete ctx;
 }
 
+void CurlContext::close_handles()
+{
+	if (m_pollHandle.data && !uv_is_closing(reinterpret_cast<uv_handle_t*>(&m_pollHandle))) {
+		uv_poll_stop(&m_pollHandle);
+		uv_close(reinterpret_cast<uv_handle_t*>(&m_pollHandle), on_close);
+	}
+
+	if (m_async.data && !uv_is_closing(reinterpret_cast<uv_handle_t*>(&m_async))) {
+		uv_close(reinterpret_cast<uv_handle_t*>(&m_async), on_close);
+	}
+
+	if (m_timer.data && !uv_is_closing(reinterpret_cast<uv_handle_t*>(&m_timer))) {
+		uv_close(reinterpret_cast<uv_handle_t*>(&m_timer), on_close);
+	}
+}
+
 void Call(const std::string& address, int port, const std::string& req, const std::string& auth, CallbackBase* cb, CallbackBase* close_cb, uv_loop_t* loop)
 {
 	if (!loop) {
 		loop = uv_default_loop();
 	}
 
-	CallOnLoop(loop,
+	const bool result = CallOnLoop(loop,
 		[=]()
 		{
 			try {
@@ -357,6 +386,10 @@ void Call(const std::string& address, int port, const std::string& req, const st
 				(*close_cb)(msg, strlen(msg));
 			}
 		});
+
+	if (!result) {
+		LOGERR(1, "JSON RPC \"" << req << "\" failed");
+	}
 }
 
 } // namespace JSONRPCRequest

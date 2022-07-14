@@ -19,6 +19,7 @@
 
 #include "uv_util.h"
 #include <map>
+#include <thread>
 
 namespace p2pool {
 
@@ -31,13 +32,13 @@ class Wallet;
 struct MinerShare
 {
 	FORCEINLINE MinerShare() : m_weight(0), m_wallet(nullptr) {}
-	FORCEINLINE MinerShare(uint64_t w, Wallet* x) : m_weight(w), m_wallet(x) {}
+	FORCEINLINE MinerShare(uint64_t w, const Wallet* x) : m_weight(w), m_wallet(x) {}
 
 	uint64_t m_weight;
-	Wallet* m_wallet;
+	const Wallet* m_wallet;
 };
 
-class SideChain
+class SideChain : public nocopy_nomove
 {
 public:
 	SideChain(p2pool* pool, NetworkType type, const char* pool_name = nullptr);
@@ -84,11 +85,12 @@ private:
 	NetworkType m_networkType;
 
 private:
-	bool get_shares(PoolBlock* tip, std::vector<MinerShare>& shares) const;
-	bool get_difficulty(PoolBlock* tip, std::vector<DifficultyData>& difficultyData, difficulty_type& curDifficulty) const;
+	bool get_shares(const PoolBlock* tip, std::vector<MinerShare>& shares) const;
+	bool get_difficulty(const PoolBlock* tip, std::vector<DifficultyData>& difficultyData, difficulty_type& curDifficulty) const;
+	bool get_wallets(const PoolBlock* tip, std::vector<const Wallet*>& wallets) const;
 	void verify_loop(PoolBlock* block);
 	void verify(PoolBlock* block);
-	void update_chain_tip(PoolBlock* block);
+	void update_chain_tip(const PoolBlock* block);
 	PoolBlock* get_parent(const PoolBlock* block) const;
 
 	// Checks if "candidate" has longer (higher difficulty) chain than "block"
@@ -128,6 +130,25 @@ private:
 
 	ChainMain m_watchBlock;
 	hash m_watchBlockSidechainId;
+
+	struct PrecalcJob
+	{
+		const PoolBlock* b;
+		std::vector<const Wallet*> wallets;
+	};
+
+	uv_cond_t m_precalcJobsCond;
+	uv_mutex_t m_precalcJobsMutex;
+
+	std::vector<PrecalcJob*> m_precalcJobs;
+	std::vector<std::thread> m_precalcWorkers;
+	unordered_set<size_t>* m_uniquePrecalcInputs;
+
+	std::atomic<bool> m_precalcFinished;
+
+	void launch_precalc(const PoolBlock* block);
+	void precalc_worker();
+	void finish_precalc();
 };
 
 } // namespace p2pool

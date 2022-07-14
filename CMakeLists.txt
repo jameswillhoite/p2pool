@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.12)
+cmake_minimum_required(VERSION 3.6)
 project(p2pool)
 
 option(STATIC_BINARY "Build static binary" OFF)
@@ -145,14 +145,7 @@ endif()
 
 add_definitions(/DZMQ_STATIC)
 
-include(CheckSymbolExists)
-
 set(CMAKE_REQUIRED_FLAGS "${GENERAL_FLAGS}")
-check_symbol_exists(pthread_cancel pthread.h HAVE_PTHREAD_CANCEL)
-
-if (HAVE_PTHREAD_CANCEL)
-	add_definitions(/DHAVE_PTHREAD_CANCEL)
-endif()
 
 include(CheckCXXSourceCompiles)
 

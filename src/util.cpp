@@ -32,7 +32,7 @@ namespace p2pool {
 #define STR2(X) STR(X)
 #define STR(X) #X
 
-const char* VERSION = "v2.2 (built"
+const char* VERSION = "v2.2.1 (built"
 #if defined(__clang__)
 	" with clang/" __clang_version__
 #elif defined(__GNUC__)
@@ -203,6 +203,15 @@ std::istream& operator>>(std::istream& s, hash& h)
 		}
 	}
 	return s;
+}
+
+void uv_cond_init_checked(uv_cond_t* cond)
+{
+	const int result = uv_cond_init(cond);
+	if (result) {
+		LOGERR(1, "failed to create conditional variable, error " << uv_err_name(result));
+		panic();
+	}
 }
 
 void uv_mutex_init_checked(uv_mutex_t* mutex)
