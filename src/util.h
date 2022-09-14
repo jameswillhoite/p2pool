@@ -68,7 +68,7 @@ private:
 
 template<typename T> FORCEINLINE ScopeGuard<T> on_scope_leave(T&& handler) { return ScopeGuard<T>(std::move(handler)); }
 
-#define ON_SCOPE_LEAVE(x) auto CONCAT(scope_guard_, __LINE__) = on_scope_leave(x);
+#define ON_SCOPE_LEAVE(...) auto CONCAT(scope_guard_, __LINE__) = on_scope_leave(__VA_ARGS__);
 
 struct MinerCallbackHandler
 {
@@ -171,6 +171,7 @@ extern BackgroundJobTracker bkg_jobs_tracker;
 void set_main_thread();
 bool is_main_thread();
 
+extern bool disable_resolve_host;
 bool resolve_host(std::string& host, bool& is_v6);
 
 template <typename Key, typename T>
@@ -218,6 +219,9 @@ FORCEINLINE uint64_t bsr(uint64_t x)
 #else
 #define bsr bsr_reference
 #endif
+
+bool str_to_ip(bool is_v6, const char* ip, raw_ip& result);
+bool is_localhost(const std::string& host);
 
 } // namespace p2pool
 

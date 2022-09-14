@@ -66,18 +66,17 @@ First you need to find a pool share. This share will stay in PPLNS window for 21
 
 ## Monero version support
 
-Monero will undergo a network upgrade on August 13th, 2022 (block 2,688,888). In order to continue mining after that date, you must update both Monero and P2Pool software to the latest available versions as soon as they are released.
+Monero network upgrade happened on August 13th, 2022 (block 2,688,888). In order to continue mining, you must update both Monero and P2Pool software to the latest available versions as soon as they are released.
 
 |Monero protocol version|Required Monero software version|Required P2Pool version
 |-|-|-|
-|v14 (active until August 13th, 2022)|v0.17.3.0 or newer|v1.0 or newer
 |v15, v16 (active after August 13th, 2022)|v0.18.0.0 or newer|v2.2 or newer
 
 ## How to mine on P2Pool
 
 ### General Considerations
 
-- In order to mine on P2Pool, a synced Monero node using monerod v0.17.3.0 or newer is required. If you do not currently have one configured, you can find instructions to do so [here](https://sethforprivacy.com/guides/run-a-monero-node-advanced/).
+- In order to mine on P2Pool, a synced Monero node using monerod v0.18.0.0 or newer is required. If you do not currently have one configured, you can find instructions to do so [here](https://sethforprivacy.com/guides/run-a-monero-node-advanced/).
 - It is highly recommended that you create a separate restricted user account for mining. While P2Pool has been battle-tested for a long time now, any software may have unknown bugs/vulnerabilities. 
 - You have to use a primary wallet address for mining. Subaddresses and integrated addresses are not supported, just like with monerod solo mining.
 - Starting from P2Pool v1.7, you can add the `--mini` parameter to your P2Pool command to connect to the **p2pool-mini** sidechain. Note that it will also change the default p2p port from 37889 to 37888.
@@ -87,11 +86,11 @@ Monero will undergo a network upgrade on August 13th, 2022 (block 2,688,888). In
 - It is highly recommended to create a new mainnet wallet for P2Pool mining because **wallet addresses are public on P2Pool**.
 
 **Wallet software compatible with P2Pool payouts**
-- [Official Monero CLI and GUI v0.17.2.3 and newer](https://www.getmonero.org/downloads/)
-- [Monerujo v2.1.0 "Vertant" and newer](https://www.monerujo.io/)
-- [Cake Wallet v4.2.7 and newer](https://cakewallet.com/)
+- [Official Monero CLI and GUI v0.18.0.0 and newer](https://www.getmonero.org/downloads/)
+- [Monerujo v3.0.2 "Fluorine Fermi" and newer](https://www.monerujo.io/)
+- [Cake Wallet v4.4.5 and newer](https://cakewallet.com/)
 - [Monero.com by Cake Wallet](https://monero.com/)
-- [Feather Wallet v1.0.0 and newer](https://featherwallet.org/)
+- [Feather Wallet v2.1.0 and newer](https://featherwallet.org/)
 - [MyMonero](https://mymonero.com/)
 
 ### GNU/Linux
@@ -226,12 +225,12 @@ nix shell github:nixos/nix/master
 
 Run the binary:
 ```
-nix run git+https://github.com/SChernykh/p2pool?ref=master
+nix run git+https://github.com/SChernykh/p2pool?ref=master&submodules=1
 ```
 
 Run the binary with arguments:
 ```
-nix run git+https://github.com/SChernykh/p2pool?ref=master -- --help
+nix run git+https://github.com/SChernykh/p2pool?ref=master&submodules=1 -- --help
 ```
 
 ### Windows
@@ -253,7 +252,7 @@ Alternatively, you can select "Clone a repository" within the GUI, then select "
 
 Run the following commands to install the necessary prerequisites, clone this repo, and build P2Pool locally on your Mac:
 ```
-brew update && brew install git cmake libuv zmq libpgm
+brew update && brew install git cmake libuv zmq libpgm curl
 git clone --recursive https://github.com/SChernykh/p2pool
 cd p2pool
 mkdir build && cd build
@@ -265,7 +264,7 @@ make -j$(sysctl -n hw.logicalcpu)
 
 Run the following commands to install the necessary prerequisites, clone this repo, and build P2Pool locally on FreeBSD:
 ```
-pkg install git cmake libuv libzmq4
+pkg install git cmake libuv libzmq4 curl
 git clone --recursive https://github.com/SChernykh/p2pool
 cd p2pool
 mkdir build && cd build

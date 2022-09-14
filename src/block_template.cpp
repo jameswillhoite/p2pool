@@ -548,7 +548,7 @@ void BlockTemplate::update(const MinerData& data, const Mempool& mempool, Wallet
 		buf.insert(buf.end(), m_poolBlockTemplate->m_sideChainData.begin(), m_poolBlockTemplate->m_sideChainData.end());
 
 		PoolBlock check;
-		const int result = check.deserialize(buf.data(), buf.size(), m_pool->side_chain());
+		const int result = check.deserialize(buf.data(), buf.size(), m_pool->side_chain(), nullptr);
 		if (result != 0) {
 			LOGERR(1, "pool block blob generation and/or parsing is broken, error " << result);
 		}
@@ -745,7 +745,7 @@ int BlockTemplate::create_miner_tx(const MinerData& data, const std::vector<Mine
 	const uint64_t corrected_extra_nonce_size = EXTRA_NONCE_SIZE + max_reward_amounts_weight - reward_amounts_weight;
 	if (corrected_extra_nonce_size > EXTRA_NONCE_SIZE) {
 		if (corrected_extra_nonce_size > EXTRA_NONCE_MAX_SIZE) {
-			LOGWARN(4, "create_miner_tx: corrected_extra_nonce_size (" << corrected_extra_nonce_size << ") is too large");
+			LOGWARN(5, "create_miner_tx: corrected_extra_nonce_size (" << corrected_extra_nonce_size << ") is too large");
 			return -3;
 		}
 		LOGINFO(4, "increased EXTRA_NONCE from " << EXTRA_NONCE_SIZE << " to " << corrected_extra_nonce_size << " bytes to maintain miner tx weight");
@@ -910,11 +910,12 @@ void BlockTemplate::calc_merkle_tree_main_branch()
 	}
 }
 
-bool BlockTemplate::get_difficulties(const uint32_t template_id, difficulty_type& mainchain_difficulty, difficulty_type& sidechain_difficulty) const
+bool BlockTemplate::get_difficulties(const uint32_t template_id, uint64_t& height, difficulty_type& mainchain_difficulty, difficulty_type& sidechain_difficulty) const
 {
 	ReadLock lock(m_lock);
 
 	if (template_id == m_templateId) {
+		height = m_height;
 		mainchain_difficulty = m_difficulty;
 		sidechain_difficulty = m_poolBlockTemplate->m_difficulty;
 		return true;
@@ -923,7 +924,7 @@ bool BlockTemplate::get_difficulties(const uint32_t template_id, difficulty_type
 	const BlockTemplate* old = m_oldTemplates[template_id % array_size(&BlockTemplate::m_oldTemplates)];
 
 	if (old && (template_id == old->m_templateId)) {
-		return old->get_difficulties(template_id, mainchain_difficulty, sidechain_difficulty);
+		return old->get_difficulties(template_id, height, mainchain_difficulty, sidechain_difficulty);
 	}
 
 	return false;
@@ -1077,7 +1078,7 @@ void BlockTemplate::submit_sidechain_block(uint32_t template_id, uint32_t nonce,
 			buf.insert(buf.end(), m_poolBlockTemplate->m_sideChainData.begin(), m_poolBlockTemplate->m_sideChainData.end());
 
 			PoolBlock check;
-			const int result = check.deserialize(buf.data(), buf.size(), side_chain);
+			const int result = check.deserialize(buf.data(), buf.size(), side_chain, nullptr);
 			if (result != 0) {
 				LOGERR(1, "pool block blob generation and/or parsing is broken, error " << result);
 			}

@@ -28,7 +28,9 @@ static constexpr char log_category_prefix[] = "P2Pool API ";
 
 namespace p2pool {
 
-p2pool_api::p2pool_api(const std::string& api_path, const bool local_stats): m_apiPath(api_path)
+p2pool_api::p2pool_api(const std::string& api_path, const bool local_stats)
+	: m_apiPath(api_path)
+	, m_counter(0)
 {
 	if (m_apiPath.empty()) {
 		LOGERR(1, "api path is empty");
@@ -131,14 +133,12 @@ void p2pool_api::dump_to_file()
 	{
 		MutexLock lock(m_dumpDataLock);
 		data = std::move(m_dumpData);
-		m_dumpData.clear();
 	}
 
 	for (auto& it : data) {
-		DumpFileWork* work = new DumpFileWork{ {}, {}, {}, it.first, std::move(it.second) };
-		work->open_req.data = work;
-		work->write_req.data = work;
-		work->close_req.data = work;
+		DumpFileWork* work = new DumpFileWork{ {}, 0, it.first, it.first + std::to_string(m_counter), std::move(it.second) };
+		work->req.data = work;
+		++m_counter;
 
 		const int flags = O_WRONLY | O_CREAT | O_TRUNC
 #ifdef O_BINARY
@@ -146,9 +146,9 @@ void p2pool_api::dump_to_file()
 #endif
 			;
 
-		const int result = uv_fs_open(uv_default_loop_checked(), &work->open_req, it.first.c_str(), flags, 0644, on_fs_open);
+		const int result = uv_fs_open(uv_default_loop_checked(), &work->req, work->tmp_name.c_str(), flags, 0644, on_fs_open);
 		if (result < 0) {
-			LOGWARN(4, "failed to open " << it.first << ", error " << uv_err_name(result));
+			LOGWARN(4, "failed to open " << work->tmp_name << ", error " << uv_err_name(result));
 			delete work;
 		}
 	}
@@ -157,11 +157,11 @@ void p2pool_api::dump_to_file()
 void p2pool_api::on_fs_open(uv_fs_t* req)
 {
 	DumpFileWork* work = reinterpret_cast<DumpFileWork*>(req->data);
-	const int fd = static_cast<int>(req->result);
+	work->fd = static_cast<int>(req->result);
+	uv_fs_req_cleanup(req);
 
-	if (fd < 0) {
-		LOGWARN(4, "failed to open " << work->name << ", error " << uv_err_name(fd));
-		uv_fs_req_cleanup(req);
+	if (work->fd < 0) {
+		LOGWARN(4, "failed to open " << work->tmp_name << ", error " << uv_err_name(work->fd));
 		delete work;
 		return;
 	}
@@ -170,15 +170,12 @@ void p2pool_api::on_fs_open(uv_fs_t* req)
 	buf[0].base = work->buf.data();
 	buf[0].len = static_cast<uint32_t>(work->buf.size());
 
-	const int result = uv_fs_write(uv_default_loop_checked(), &work->write_req, static_cast<uv_file>(fd), buf, 1, 0, on_fs_write);
+	const int result = uv_fs_write(uv_default_loop_checked(), &work->req, static_cast<uv_file>(work->fd), buf, 1, 0, on_fs_write);
 	if (result < 0) {
-		LOGWARN(4, "failed to write to " << work->name << ", error " << uv_err_name(result));
-		uv_fs_req_cleanup(req);
+		LOGWARN(4, "failed to write to " << work->tmp_name << ", error " << uv_err_name(result));
 		delete work;
 		return;
 	}
-
-	uv_fs_req_cleanup(req);
 }
 
 void p2pool_api::on_fs_write(uv_fs_t* req)
@@ -186,18 +183,17 @@ void p2pool_api::on_fs_write(uv_fs_t* req)
 	DumpFileWork* work = reinterpret_cast<DumpFileWork*>(req->data);
 
 	if (req->result < 0) {
-		LOGWARN(4, "failed to write to " << work->name << ", error " << uv_err_name(static_cast<int>(req->result)));
-	}
-
-	const int result = uv_fs_close(uv_default_loop_checked(), &work->close_req, static_cast<uv_file>(work->open_req.result), on_fs_close);
-	if (result < 0) {
-		LOGWARN(4, "failed to close " << work->name << ", error " << uv_err_name(result));
-		uv_fs_req_cleanup(req);
-		delete work;
-		return;
+		LOGWARN(4, "failed to write to " << work->tmp_name << ", error " << uv_err_name(static_cast<int>(req->result)));
 	}
 
 	uv_fs_req_cleanup(req);
+
+	const int result = uv_fs_close(uv_default_loop_checked(), &work->req, static_cast<uv_file>(work->fd), on_fs_close);
+	if (result < 0) {
+		LOGWARN(4, "failed to close " << work->tmp_name << ", error " << uv_err_name(result));
+		delete work;
+		return;
+	}
 }
 
 void p2pool_api::on_fs_close(uv_fs_t* req)
@@ -205,7 +201,25 @@ void p2pool_api::on_fs_close(uv_fs_t* req)
 	DumpFileWork* work = reinterpret_cast<DumpFileWork*>(req->data);
 
 	if (req->result < 0) {
-		LOGWARN(4, "failed to close " << work->name << ", error " << uv_err_name(static_cast<int>(req->result)));
+		LOGWARN(4, "failed to close " << work->tmp_name << ", error " << uv_err_name(static_cast<int>(req->result)));
+	}
+
+	uv_fs_req_cleanup(req);
+
+	const int result = uv_fs_rename(uv_default_loop_checked(), &work->req, work->tmp_name.c_str(), work->name.c_str(), on_fs_rename);
+	if (result < 0) {
+		LOGWARN(4, "failed to rename " << work->tmp_name << " to " << work->name << ", error " << uv_err_name(result));
+		delete work;
+		return;
+	}
+}
+
+void p2pool_api::on_fs_rename(uv_fs_t* req)
+{
+	DumpFileWork* work = reinterpret_cast<DumpFileWork*>(req->data);
+
+	if (req->result < 0) {
+		LOGWARN(4, "failed to rename " << work->tmp_name << " to " << work->name << ", error " << uv_err_name(static_cast<int>(req->result)));
 	}
 
 	uv_fs_req_cleanup(req);

@@ -51,6 +51,7 @@ public:
 	void clear_cached_blocks();
 	void store_in_cache(const PoolBlock& block);
 
+	void connect_to_peers_async(const char* peer_list);
 	void connect_to_peers(const std::string& peer_list);
 	void on_connect_failed(bool is_v6, const raw_ip& ip, int port) override;
 
@@ -134,7 +135,7 @@ public:
 	uint64_t get_peerId() const { return m_peerId; }
 
 	void print_status() override;
-	void show_peers();
+	void show_peers_async();
 	size_t peer_list_size() const { MutexLock lock(m_peerListLock); return m_peerList.size(); }
 
 	uint32_t max_outgoing_peers() const { return m_maxOutgoingPeers; }
@@ -166,6 +167,7 @@ private:
 	void check_zmq();
 	void update_peer_connections();
 	void update_peer_list();
+	void send_peer_list_request(P2PClient* client, uint64_t cur_time);
 	void save_peer_list_async();
 	void save_peer_list();
 	void load_peer_list();
@@ -215,12 +217,23 @@ private:
 	std::vector<Broadcast*> m_broadcastQueue;
 
 	bool m_lookForMissingBlocks;
-
-	uv_mutex_t m_missingBlockRequestsLock;
 	unordered_set<std::pair<uint64_t, uint64_t>> m_missingBlockRequests;
+
+	P2PClient* m_fastestPeer;
 
 	static void on_broadcast(uv_async_t* handle) { reinterpret_cast<P2PServer*>(handle->data)->on_broadcast(); }
 	void on_broadcast();
+
+	uv_mutex_t m_connectToPeersLock;
+	uv_async_t m_connectToPeersAsync;
+	std::string m_connectToPeersData;
+
+	static void on_connect_to_peers(uv_async_t* handle);
+
+	uv_async_t m_showPeersAsync;
+
+	static void on_show_peers(uv_async_t* handle) { reinterpret_cast<P2PServer*>(handle->data)->show_peers(); }
+	void show_peers();
 };
 
 } // namespace p2pool

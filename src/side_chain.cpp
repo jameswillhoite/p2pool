@@ -682,7 +682,7 @@ bool SideChain::get_block_blob(const hash& id, std::vector<uint8_t>& blob) const
 	return true;
 }
 
-bool SideChain::get_outputs_blob(PoolBlock* block, uint64_t total_reward, std::vector<uint8_t>& blob) const
+bool SideChain::get_outputs_blob(PoolBlock* block, uint64_t total_reward, std::vector<uint8_t>& blob, uv_loop_t* loop) const
 {
 	blob.clear();
 
@@ -719,6 +719,63 @@ bool SideChain::get_outputs_blob(PoolBlock* block, uint64_t total_reward, std::v
 
 	const size_t n = tmpShares.size();
 
+	// Helper jobs call get_eph_public_key with indices in descending order
+	// Current thread will process indices in ascending order so when they meet, everything will be cached
+
+	std::atomic<int> counter{ 0 };
+	std::atomic<int> num_helper_jobs_finished{ 0 };
+	int num_helper_jobs_started = 0;
+
+	if (loop) {
+		constexpr size_t HELPER_JOBS_COUNT = 4;
+
+		struct Work
+		{
+			uv_work_t req;
+			const std::vector<MinerShare>& tmpShares;
+			const hash& txkeySec;
+			std::atomic<int>& counter;
+			std::atomic<int>& num_helper_jobs_finished;
+
+			// Fix MSVC warnings
+			Work() = delete;
+			Work& operator=(Work&&) = delete;
+		};
+
+		counter = static_cast<int>(n) - 1;
+		num_helper_jobs_started = HELPER_JOBS_COUNT;
+
+		for (size_t i = 0; i < HELPER_JOBS_COUNT; ++i) {
+			Work* w = new Work{ {}, tmpShares, block->m_txkeySec, counter, num_helper_jobs_finished };
+			w->req.data = w;
+
+			const int err = uv_queue_work(loop, &w->req,
+				[](uv_work_t* req)
+				{
+					Work* work = reinterpret_cast<Work*>(req->data);
+					hash eph_public_key;
+
+					int index;
+					while ((index = work->counter.fetch_sub(1)) >= 0) {
+						uint8_t view_tag;
+						work->tmpShares[index].m_wallet->get_eph_public_key(work->txkeySec, static_cast<size_t>(index), eph_public_key, view_tag);
+					}
+
+					++work->num_helper_jobs_finished;
+				},
+				[](uv_work_t* req, int /*status*/)
+				{
+					delete reinterpret_cast<Work*>(req->data);
+				});
+
+			if (err) {
+				LOGERR(1, "get_outputs_blob: uv_queue_work failed, error " << uv_err_name(err));
+				--num_helper_jobs_started;
+				delete w;
+			}
+		}
+	}
+
 	blob.reserve(n * 39 + 64);
 
 	writeVarint(n, blob);
@@ -730,6 +787,13 @@ bool SideChain::get_outputs_blob(PoolBlock* block, uint64_t total_reward, std::v
 
 	hash eph_public_key;
 	for (size_t i = 0; i < n; ++i) {
+		// stop helper jobs when they meet with current thread
+		const int c = counter.load();
+		if ((c >= 0) && (static_cast<int>(i) >= c)) {
+			// this will cause all helper jobs to finish immediately
+			counter = -1;
+		}
+
 		writeVarint(tmpRewards[i], blob);
 
 		blob.emplace_back(tx_type);
@@ -747,17 +811,27 @@ bool SideChain::get_outputs_blob(PoolBlock* block, uint64_t total_reward, std::v
 		block->m_outputs.emplace_back(tmpRewards[i], eph_public_key, tx_type, view_tag);
 	}
 
+	if (loop) {
+		// this will cause all helper jobs to finish immediately
+		counter = -1;
+
+		while (num_helper_jobs_finished < num_helper_jobs_started) {
+			std::this_thread::yield();
+		}
+	}
+
 	return true;
 }
 
-void SideChain::print_status() const
+void SideChain::print_status(bool obtain_sidechain_lock) const
 {
 	std::vector<hash> blocks_in_window;
 	blocks_in_window.reserve(m_chainWindowSize * 9 / 8);
 
 	const difficulty_type diff = difficulty();
 
-	ReadLock lock(m_sidechainLock);
+	if (obtain_sidechain_lock) uv_rwlock_rdlock(&m_sidechainLock);
+	ON_SCOPE_LEAVE([this, obtain_sidechain_lock]() { if (obtain_sidechain_lock) uv_rwlock_rdunlock(&m_sidechainLock); });
 
 	uint64_t rem;
 	uint64_t pool_hashrate = udiv128(diff.hi, diff.lo, m_targetBlockTime, &rem);
@@ -1831,9 +1905,18 @@ void SideChain::get_missing_blocks(std::vector<hash>& missing_blocks) const
 			missing_blocks.push_back(b.second->m_parent);
 		}
 
+		int num_missing_uncles = 0;
+
 		for (const hash& h : b.second->m_uncles) {
 			if (!h.empty() && (m_blocksById.find(h) == m_blocksById.end())) {
 				missing_blocks.push_back(h);
+
+				// Get no more than 2 first missing uncles at a time from each block
+				// Blocks with more than 2 uncles are very rare and they will be processed in several steps
+				++num_missing_uncles;
+				if (num_missing_uncles >= 2) {
+					break;
+				}
 			}
 		}
 	}
@@ -2041,6 +2124,17 @@ void SideChain::finish_precalc()
 	{
 		LOGERR(1, "exception in finish_precalc(): " << e.what());
 	}
+
+#ifdef DEV_TEST_SYNC
+	if (m_pool) {
+		LOGINFO(0, log::LightGreen() << "[DEV] Synchronization finished successfully, stopping P2Pool now");
+		print_status(false);
+		if (m_pool->p2p_server()) {
+			m_pool->p2p_server()->print_status();
+		}
+		m_pool->stop();
+	}
+#endif
 }
 
 } // namespace p2pool

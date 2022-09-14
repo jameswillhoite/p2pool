@@ -46,11 +46,11 @@ private:
 	static void on_dump_to_file(uv_async_t* async) { reinterpret_cast<p2pool_api*>(async->data)->dump_to_file(); }
 
 	struct DumpFileWork {
-		uv_fs_t open_req;
-		uv_fs_t write_req;
-		uv_fs_t close_req;
+		uv_fs_t req;
+		int fd;
 
 		std::string name;
+		std::string tmp_name;
 		std::vector<char> buf;
 	};
 
@@ -77,6 +77,7 @@ private:
 	static void on_fs_open(uv_fs_t* req);
 	static void on_fs_write(uv_fs_t* req);
 	static void on_fs_close(uv_fs_t* req);
+	static void on_fs_rename(uv_fs_t* req);
 
 	std::string m_apiPath;
 	std::string m_networkPath;
@@ -87,6 +88,8 @@ private:
 	unordered_map<std::string, std::vector<char>> m_dumpData;
 
 	uv_async_t m_dumpToFileAsync;
+
+	uint64_t m_counter;
 };
 
 } // namespace p2pool

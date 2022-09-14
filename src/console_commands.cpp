@@ -161,21 +161,21 @@ static void do_loglevel(p2pool * /* m_pool */, const char *args)
 static void do_addpeers(p2pool *m_pool, const char *args)
 {
 	if (m_pool->p2p_server()) {
-		m_pool->p2p_server()->connect_to_peers(args);
+		m_pool->p2p_server()->connect_to_peers_async(args);
 	}
 }
 
 static void do_droppeers(p2pool *m_pool, const char * /* args */)
 {
 	if (m_pool->p2p_server()) {
-		m_pool->p2p_server()->drop_connections();
+		m_pool->p2p_server()->drop_connections_async();
 	}
 }
 
 static void do_showpeers(p2pool* m_pool, const char* /* args */)
 {
 	if (m_pool->p2p_server()) {
-		m_pool->p2p_server()->show_peers();
+		m_pool->p2p_server()->show_peers_async();
 	}
 }
 
@@ -272,7 +272,7 @@ void ConsoleCommands::stdinReadCallback(uv_stream_t* stream, ssize_t nread, cons
 			}
 
 			if (!c->name.len) {
-				LOGWARN(0, "Unknown command " << command);
+				LOGWARN(0, "Unknown command " << command.c_str());
 			}
 
 			k = command.find_first_not_of("\r\n", k + 1);
@@ -289,9 +289,19 @@ void ConsoleCommands::stdinReadCallback(uv_stream_t* stream, ssize_t nread, cons
 void ConsoleCommands::loop(void* data)
 {
 	LOGINFO(1, "event loop started");
+
 	ConsoleCommands* pThis = static_cast<ConsoleCommands*>(data);
-	uv_run(&pThis->m_loop, UV_RUN_DEFAULT);
-	uv_loop_close(&pThis->m_loop);
+
+	int err = uv_run(&pThis->m_loop, UV_RUN_DEFAULT);
+	if (err) {
+		LOGWARN(1, "uv_run returned " << err);
+	}
+
+	err = uv_loop_close(&pThis->m_loop);
+	if (err) {
+		LOGWARN(1, "uv_loop_close returned error " << uv_err_name(err));
+	}
+
 	LOGINFO(1, "event loop stopped");
 }
 
