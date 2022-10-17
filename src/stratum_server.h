@@ -103,6 +103,7 @@ private:
 
 	struct BlobsData
 	{
+		uint32_t m_extraNonceStart;
 		std::vector<uint8_t> m_blobs;
 		size_t m_blobSize;
 		uint64_t m_target;
@@ -179,6 +180,8 @@ private:
 
 	void update_hashrate_data(uint64_t hashes, uint64_t timestamp);
 	void api_update_local_stats(uint64_t timestamp);
+
+	void on_shutdown() override;
 };
 
 } // namespace p2pool

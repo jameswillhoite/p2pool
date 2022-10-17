@@ -33,6 +33,7 @@ class Miner;
 class ConsoleCommands;
 class p2pool_api;
 class ZMQReader;
+struct PoolBlock;
 
 class p2pool : public MinerCallbackHandler
 {
@@ -74,7 +75,7 @@ public:
 	virtual void handle_chain_main(ChainMain& data, const char* extra) override;
 
 	void submit_block_async(uint32_t template_id, uint32_t nonce, uint32_t extra_nonce);
-	void submit_block_async(const std::vector<uint8_t>& blob);
+	void submit_block_async(std::vector<uint8_t>&& blob);
 	void submit_sidechain_block(uint32_t template_id, uint32_t nonce, uint32_t extra_nonce);
 
 	void update_block_template_async(bool is_alternative_block = false);
@@ -84,7 +85,7 @@ public:
 
 	bool chainmain_get_by_hash(const hash& id, ChainMain& data) const;
 
-	void api_update_block_found(const ChainMain* data);
+	void api_update_block_found(const ChainMain* data, const PoolBlock* block);
 
 	bool get_difficulty_at_height(uint64_t height, difficulty_type& diff);
 
