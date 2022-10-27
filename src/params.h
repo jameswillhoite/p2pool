@@ -50,6 +50,8 @@ struct Params
 	bool m_mini = false;
 	bool m_autoDiff = true;
 	std::string m_rpcLogin;
+    std::string m_onShareFound;
+    std::string m_onBlockFound;
 	std::string m_socks5Proxy;
 	bool m_dns = true;
 };

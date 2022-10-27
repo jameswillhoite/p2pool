@@ -48,6 +48,8 @@ void p2pool_usage()
 		"--mini               Connect to p2pool-mini sidechain. Note that it will also change default p2p port from %d to %d\n"
 		"--no-autodiff        Disable automatic difficulty adjustment for miners connected to stratum\n"
 		"--rpc-login          Specify username[:password] required for Monero RPC server\n"
+        "--on-share-found     Path of file to run when share is found\n"
+        "--on-block-found     Path of file to run when block is found\n"
 		"--socks5             Specify IP:port of a SOCKS5 proxy to use for outgoing connections\n"
 		"--no-dns             disable DNS queries, use only IP addresses to connect to peers (seed node DNS will be unavailable too)\n"
 		"--help               Show this help message\n\n"
