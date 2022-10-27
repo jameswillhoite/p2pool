@@ -887,6 +887,8 @@ void StratumServer::on_after_share_found(uv_work_t* req, int /*status*/)
 {
 	SubmittedShare* share = reinterpret_cast<SubmittedShare*>(req->data);
 	StratumClient* client = share->m_client;
+	StratumServer* server = share->m_server;
+    p2pool* pool = server->m_pool;
 
 	if (share->m_highEnoughDifficulty) {
 		const char* s = client->m_customUser;
@@ -898,7 +900,7 @@ void StratumServer::on_after_share_found(uv_work_t* req, int /*status*/)
             char buf[log::Stream::BUF_SIZE + 1];
             log::Stream cmd(buf);
 
-            cmd  << pool->params().m_onShareFound << " SHARE" << " " << static_cast<char*>(client->m_addrString) << " " << s << " " << height << " " << sidechain_difficulty << '\0';
+            cmd  << pool->params().m_onShareFound << " SHARE" << " " << static_cast<char*>(client->m_addrString) << " " << s << " " << share->m_mainchainHeight << " " << share->m_sidechainDifficulty << '\0';
 
             //If there is an error, then log it
             if(!system(buf))
@@ -910,7 +912,6 @@ void StratumServer::on_after_share_found(uv_work_t* req, int /*status*/)
 
 	ON_SCOPE_LEAVE([share]() { share->m_server->m_submittedSharesPool.push_back(share); });
 
-	StratumServer* server = share->m_server;
 
 	const bool bad_share = (share->m_result == SubmittedShare::Result::LOW_DIFF) || (share->m_result == SubmittedShare::Result::INVALID_POW);
 
