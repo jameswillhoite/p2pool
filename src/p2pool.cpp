@@ -410,6 +410,22 @@ void p2pool::handle_chain_main(ChainMain& data, const char* extra)
 				LOGINFO(0, log::LightCyan() << "You received a payout of " << log::LightGreen() << log::XMRAmount(payout) << log::LightCyan() << " in block " << log::LightGreen() << data.height);
 			}
 			api_update_block_found(&data, block);
+
+
+ 			if(!params().m_onBlockFound.empty())
+ 				{
+                    char buf[log::Stream::BUF_SIZE + 1];
+                    log::Stream cmd(buf);
+
+                    cmd << params().m_onBlockFound << " BLOCK " << data.id << " " << data.timestamp << " " << data.reward << " " << log::XMRAmount(payout) << '\0';
+
+                     //If there is an error, then log it
+                     if(!system(buf))
+                     {
+                          LOGINFO(4, "ERROR Calling onBlockFound");
+                      }
+
+                }
 		}
 		else {
 			side_chain().watch_mainchain_block(data, sidechain_id);

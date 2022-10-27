@@ -892,6 +892,20 @@ void StratumServer::on_after_share_found(uv_work_t* req, int /*status*/)
 		const char* s = client->m_customUser;
 		LOGINFO(0, log::Green() << "SHARE FOUND: mainchain height " << share->m_mainchainHeight << ", diff " << share->m_sidechainDifficulty << ", client " << static_cast<char*>(client->m_addrString) << (*s ? " user " : "") << s << ", effort " << share->m_effort << '%');
 		bkg_jobs_tracker.stop("StratumServer::on_share_found");
+		
+		if(!pool->params().m_onShareFound.empty())
+        {
+            char buf[log::Stream::BUF_SIZE + 1];
+            log::Stream cmd(buf);
+
+            cmd  << pool->params().m_onShareFound << " SHARE" << " " << static_cast<char*>(client->m_addrString) << " " << s << " " << height << " " << sidechain_difficulty << '\0';
+
+            //If there is an error, then log it
+            if(!system(buf))
+            {
+                LOGINFO(6, log::Red() << "ERROR Calling onShareFound");
+            }
+        }
 	}
 
 	ON_SCOPE_LEAVE([share]() { share->m_server->m_submittedSharesPool.push_back(share); });
