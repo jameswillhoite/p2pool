@@ -35,12 +35,12 @@ Params::Params(int argc, char* argv[])
 		}
 
 		if ((strcmp(argv[i], "--rpc-port") == 0) && (i + 1 < argc)) {
-			m_rpcPort = strtoul(argv[++i], nullptr, 10);
+			m_rpcPort = std::min(std::max(strtoul(argv[++i], nullptr, 10), 1UL), 65535UL);
 			ok = true;
 		}
 
 		if ((strcmp(argv[i], "--zmq-port") == 0) && (i + 1 < argc)) {
-			m_zmqPort = strtoul(argv[++i], nullptr, 10);
+			m_zmqPort = std::min(std::max(strtoul(argv[++i], nullptr, 10), 1UL), 65535UL);
 			ok = true;
 		}
 
@@ -146,6 +146,7 @@ Params::Params(int argc, char* argv[])
 			ok = true;
 		}
 
+
 		if ((strcmp(argv[i], "--on-share-found") == 0) && (i + 1 < argc)) {
             m_onShareFound = argv[++i];
             ok = true;
@@ -155,6 +156,11 @@ Params::Params(int argc, char* argv[])
             m_onBlockFound = argv[++i];
             ok = true;
         }
+
+		if ((strcmp(argv[i], "--p2p-external-port") == 0) && (i + 1 < argc)) {
+			m_p2pExternalPort = std::min(std::max(strtoul(argv[++i], nullptr, 10), 1UL), 65535UL);
+			ok = true;
+		}
 
 		if (!ok) {
 			fprintf(stderr, "Unknown command line parameter %s\n\n", argv[i]);
