@@ -141,7 +141,7 @@ void RandomX_Hasher::set_seed_async(const hash& seed)
 	const int err = uv_queue_work(uv_default_loop_checked(), &work->req,
 		[](uv_work_t* req)
 		{
-			bkg_jobs_tracker.start("RandomX_Hasher::set_seed_async");
+			BACKGROUND_JOB_START(RandomX_Hasher::set_seed_async);
 			Work* work = reinterpret_cast<Work*>(req->data);
 			if (!work->pool->stopped()) {
 				work->hasher->set_seed(work->seed);
@@ -150,7 +150,7 @@ void RandomX_Hasher::set_seed_async(const hash& seed)
 		[](uv_work_t* req, int)
 		{
 			delete reinterpret_cast<Work*>(req->data);
-			bkg_jobs_tracker.stop("RandomX_Hasher::set_seed_async");
+			BACKGROUND_JOB_STOP(RandomX_Hasher::set_seed_async);
 		}
 	);
 
@@ -382,8 +382,8 @@ RandomX_Hasher_RPC::RandomX_Hasher_RPC(p2pool* pool)
 	// Init loop user data before running it
 	GetLoopUserData(&m_loop);
 
-	uv_async_init(&m_loop, &m_shutdownAsync, on_shutdown);
-	uv_async_init(&m_loop, &m_kickTheLoopAsync, nullptr);
+	uv_async_init_checked(&m_loop, &m_shutdownAsync, on_shutdown);
+	uv_async_init_checked(&m_loop, &m_kickTheLoopAsync, nullptr);
 	m_shutdownAsync.data = this;
 
 	uv_mutex_init_checked(&m_requestMutex);

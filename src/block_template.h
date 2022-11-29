@@ -23,7 +23,8 @@
 
 namespace p2pool {
 
-class p2pool;
+class SideChain;
+class RandomX_Hasher_Base;
 class Mempool;
 class Wallet;
 struct PoolBlock;
@@ -32,18 +33,19 @@ struct MinerShare;
 class BlockTemplate
 {
 public:
-	explicit BlockTemplate(p2pool* pool);
+	explicit BlockTemplate(SideChain* sidechain, RandomX_Hasher_Base* hasher);
 	~BlockTemplate();
 
 	BlockTemplate(const BlockTemplate& b);
 	BlockTemplate& operator=(const BlockTemplate& b);
 
 	void update(const MinerData& data, const Mempool& mempool, Wallet* miner_wallet);
+	uint64_t last_updated() const { return m_lastUpdated.load(); }
 
-	bool get_difficulties(const uint32_t template_id, uint64_t& height, difficulty_type& mainchain_difficulty, difficulty_type& sidechain_difficulty) const;
+	bool get_difficulties(const uint32_t template_id, uint64_t& height, uint64_t& sidechain_height, difficulty_type& mainchain_difficulty, difficulty_type& sidechain_difficulty) const;
 	uint32_t get_hashing_blob(const uint32_t template_id, uint32_t extra_nonce, uint8_t (&blob)[128], uint64_t& height, difficulty_type& difficulty, difficulty_type& sidechain_difficulty, hash& seed_hash, size_t& nonce_offset) const;
 
-	uint32_t get_hashing_blob(uint32_t extra_nonce, uint8_t (&blob)[128], uint64_t& height, difficulty_type& difficulty, difficulty_type& sidechain_difficulty, hash& seed_hash, size_t& nonce_offset, uint32_t& template_id) const;
+	uint32_t get_hashing_blob(uint32_t extra_nonce, uint8_t (&blob)[128], uint64_t& height, uint64_t& sidechain_height, difficulty_type& difficulty, difficulty_type& sidechain_difficulty, hash& seed_hash, size_t& nonce_offset, uint32_t& template_id) const;
 	uint32_t get_hashing_blobs(uint32_t extra_nonce_start, uint32_t count, std::vector<uint8_t>& blobs, uint64_t& height, difficulty_type& difficulty, difficulty_type& sidechain_difficulty, hash& seed_hash, size_t& nonce_offset, uint32_t& template_id) const;
 
 	std::vector<uint8_t> get_block_template_blob(uint32_t template_id, size_t& nonce_offset, size_t& extra_nonce_offset) const;
@@ -54,9 +56,11 @@ public:
 	void submit_sidechain_block(uint32_t template_id, uint32_t nonce, uint32_t extra_nonce);
 
 	FORCEINLINE const std::vector<MinerShare>& shares() const { return m_shares; }
+	FORCEINLINE const PoolBlock* pool_block_template() const { return m_poolBlockTemplate; }
 
 private:
-	p2pool* m_pool;
+	SideChain* m_sidechain;
+	RandomX_Hasher_Base* m_hasher;
 
 private:
 	int create_miner_tx(const MinerData& data, const std::vector<MinerShare>& shares, uint64_t max_reward_amounts_weight, bool dry_run);
@@ -69,6 +73,7 @@ private:
 	mutable uv_rwlock_t m_lock;
 
 	uint32_t m_templateId;
+	std::atomic<uint64_t> m_lastUpdated;
 
 	std::vector<uint8_t> m_blockTemplateBlob;
 	std::vector<uint8_t> m_merkleTreeMainBranch;
@@ -101,9 +106,11 @@ private:
 	std::vector<uint8_t> m_blockHeader;
 	std::vector<uint8_t> m_minerTxExtra;
 	std::vector<uint8_t> m_transactionHashes;
+	unordered_set<hash> m_transactionHashesSet;
 	std::vector<uint64_t> m_rewards;
 	std::vector<TxMempoolData> m_mempoolTxs;
 	std::vector<int> m_mempoolTxsOrder;
+	std::vector<int> m_mempoolTxsOrder2;
 	std::vector<MinerShare> m_shares;
 
 	std::mt19937_64 m_rng;

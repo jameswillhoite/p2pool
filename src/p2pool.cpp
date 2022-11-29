@@ -162,7 +162,7 @@ p2pool::p2pool(int argc, char* argv[])
 	m_hasher = new RandomX_Hasher_RPC(this);
 #endif
 
-	m_blockTemplate = new BlockTemplate(this);
+	m_blockTemplate = new BlockTemplate(m_sideChain, m_hasher);
 	m_mempool = new Mempool();
 
 	try {
@@ -677,14 +677,14 @@ void p2pool::download_block_headers(uint64_t current_height)
 					}
 				}
 				else {
-					LOGERR(1, "fatal error: couldn't download block header for height " << height);
+					LOGERR(1, "fatal error: couldn't download block header for seed height " << height);
 					panic();
 				}
 			},
 			[height](const char* data, size_t size)
 			{
 				if (size > 0) {
-					LOGERR(1, "fatal error: couldn't download block header for height " << height << ", error " << log::const_buf(data, size));
+					LOGERR(1, "fatal error: couldn't download block header for seed height " << height << ", error " << log::const_buf(data, size));
 					panic();
 				}
 			});
@@ -720,15 +720,15 @@ void p2pool::download_block_headers(uint64_t current_height)
 				}
 			}
 			else {
-				LOGERR(1, "fatal error: couldn't download block headers for heights " << start_height << " - " << current_height - 1);
-				panic();
+				LOGERR(1, "Couldn't download block headers for heights " << start_height << " - " << current_height - 1);
+				download_block_headers(current_height);
 			}
 		},
-		[start_height, current_height](const char* data, size_t size)
+		[this, start_height, current_height](const char* data, size_t size)
 		{
 			if (size > 0) {
-				LOGERR(1, "fatal error: couldn't download block headers for heights " << start_height << " - " << current_height - 1 << ", error " << log::const_buf(data, size));
-				panic();
+				LOGERR(1, "Couldn't download block headers for heights " << start_height << " - " << current_height - 1 << ", error " << log::const_buf(data, size));
+				download_block_headers(current_height);
 			}
 		});
 }
@@ -1442,12 +1442,6 @@ static void on_signal(uv_signal_t* handle, int signum)
 	pool->stop();
 }
 
-static bool init_uv_threadpool()
-{
-	static uv_work_t dummy;
-	return (uv_queue_work(uv_default_loop_checked(), &dummy, [](uv_work_t*) {}, nullptr) == 0);
-}
-
 bool init_signals(p2pool* pool, bool init)
 {
 #ifdef SIGPIPE
@@ -1529,11 +1523,6 @@ int p2pool::run()
 {
 	if (!m_params->valid()) {
 		LOGERR(1, "Invalid or missing command line. Try \"p2pool --help\".");
-		return 1;
-	}
-
-	if (!init_uv_threadpool()) {
-		LOGERR(1, "failed to start UV thread pool");
 		return 1;
 	}
 

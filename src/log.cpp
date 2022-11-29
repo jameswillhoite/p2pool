@@ -17,6 +17,7 @@
 
 #include "common.h"
 #include "uv_util.h"
+#include "wallet.h"
 #include <ctime>
 #include <fstream>
 #include <thread>
@@ -32,9 +33,6 @@ int GLOBAL_LOG_LEVEL = 3;
 bool CONSOLE_COLORS = true;
 
 #ifndef P2POOL_LOG_DISABLE
-
-static std::atomic<bool> stopped{ false };
-static volatile bool worker_started = false;
 
 #ifdef _WIN32
 static const HANDLE hStdIn  = GetStdHandle(STD_INPUT_HANDLE);
@@ -54,6 +52,8 @@ public:
 	FORCEINLINE Worker()
 		: m_writePos(0)
 		, m_readPos(0)
+		, m_started{ false }
+		, m_stopped(false)
 	{
 		set_main_thread();
 
@@ -73,15 +73,14 @@ public:
 			abort();
 		}
 
-		while (!worker_started) {
+		while (m_started.load() == false) {
 			std::this_thread::yield();
 		}
 
 #ifdef _WIN32
+		SetConsoleMode(hStdIn, ENABLE_ECHO_INPUT | ENABLE_LINE_INPUT | ENABLE_PROCESSED_INPUT | ENABLE_EXTENDED_FLAGS);
+
 		DWORD dwConsoleMode;
-		if (GetConsoleMode(hStdIn, &dwConsoleMode)) {
-			SetConsoleMode(hStdIn, dwConsoleMode & ~ENABLE_QUICK_EDIT_MODE);
-		}
 		if (GetConsoleMode(hStdOut, &dwConsoleMode)) {
 			SetConsoleMode(hStdOut, dwConsoleMode | ENABLE_VIRTUAL_TERMINAL_PROCESSING);
 		}
@@ -92,6 +91,8 @@ public:
 		if (!m_logFile.is_open()) {
 			LOGERR(0, "failed to open " << log_file_name);
 		}
+
+		init_uv_threadpool();
 	}
 
 	~Worker()
@@ -105,15 +106,24 @@ public:
 
 	FORCEINLINE void stop()
 	{
-		if (stopped.exchange(true)) {
-			return;
+		{
+			MutexLock lock(m_mutex);
+			if (m_stopped) {
+				return;
+			}
+
+			m_stopped = true;
+			LOGINFO(0, "stopped");
 		}
 
-		LOGINFO(0, "stopped");
 		uv_thread_join(&m_worker);
 		uv_cond_destroy(&m_cond);
 		uv_mutex_destroy(&m_mutex);
 		uv_loop_close(uv_default_loop());
+
+#if ((UV_VERSION_MAJOR > 1) || ((UV_VERSION_MAJOR == 1) && (UV_VERSION_MINOR >= 38)))
+		uv_library_shutdown();
+#endif
 
 		m_logFile.close();
 	}
@@ -144,16 +154,46 @@ public:
 	}
 
 private:
+	static void init_uv_threadpool()
+	{
+#ifdef _MSC_VER
+#define putenv _putenv
+#endif
+
+		const uint32_t N = std::max(std::min(std::thread::hardware_concurrency(), 4U), 8U);
+
+		char buf[40] = {};
+		log::Stream s(buf);
+		s << "UV_THREADPOOL_SIZE=" << N << '\0';
+
+		int err = putenv(buf);
+		if (err != 0) {
+			err = errno;
+			LOGWARN(0, "Couldn't set UV thread pool size to " << N << " threads, putenv returned error " << err);
+		}
+
+		static uv_work_t dummy;
+		err = uv_queue_work(uv_default_loop_checked(), &dummy, [](uv_work_t*) {}, nullptr);
+		if (err) {
+			LOGERR(0, "init_uv_threadpool: uv_queue_work failed, error " << uv_err_name(err));
+		}
+	}
+
+private:
 	static void run_wrapper(void* arg) { reinterpret_cast<Worker*>(arg)->run(); }
 
 	NOINLINE void run()
 	{
-		worker_started = true;
+		m_started.exchange(true);
 
 		do {
 			uv_mutex_lock(&m_mutex);
 			if (m_readPos == m_writePos.load()) {
-				// Nothing to do, wait for the signal
+				// Nothing to do, wait for the signal or exit if stopped
+				if (m_stopped) {
+					uv_mutex_unlock(&m_mutex);
+					return;
+				}
 				uv_cond_wait(&m_cond, &m_mutex);
 			}
 			uv_mutex_unlock(&m_mutex);
@@ -217,7 +257,7 @@ private:
 					severity = '\0';
 
 					m_readPos += SLOT_SIZE;
-				} while (m_readPos < writePos);
+				} while (m_readPos != writePos);
 			}
 
 			// Flush the log file only after all pending log lines have been written
@@ -231,7 +271,7 @@ private:
 					m_logFile.open(log_file_name, std::ios::app | std::ios::binary);
 				}
 			}
-		} while (!stopped);
+		} while (1);
 	}
 
 	static FORCEINLINE void strip_colors(char* buf, uint32_t& size)
@@ -268,6 +308,9 @@ private:
 	uv_cond_t m_cond;
 	uv_mutex_t m_mutex;
 	uv_thread_t m_worker;
+
+	std::atomic<bool> m_started;
+	bool m_stopped;
 
 	std::ofstream m_logFile;
 };
@@ -336,7 +379,7 @@ NOINLINE void Stream::writeCurrentTime()
 	m_numberWidth = 1;
 }
 
-NOINLINE void put_rawip(const raw_ip& value, Stream* wrapper)
+NOINLINE void Stream::Entry<raw_ip>::put(const raw_ip& value, Stream* wrapper)
 {
 	const char* addr_str;
 	char addr_str_buf[64];
@@ -357,6 +400,13 @@ NOINLINE void put_rawip(const raw_ip& value, Stream* wrapper)
 	else {
 		*wrapper << "N/A";
 	}
+}
+
+NOINLINE void Stream::Entry<Wallet>::put(const Wallet& w, Stream* wrapper)
+{
+	char buf[Wallet::ADDRESS_LENGTH];
+	w.encode(buf);
+	wrapper->writeBuf(buf, Wallet::ADDRESS_LENGTH);
 }
 
 } // namespace log

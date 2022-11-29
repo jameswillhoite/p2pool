@@ -34,11 +34,16 @@
 
 static constexpr char log_category_prefix[] = "BlockTemplate ";
 
+// Max P2P message size (128 KB) minus BLOCK_RESPONSE header (5 bytes)
+static constexpr size_t MAX_BLOCK_TEMPLATE_SIZE = 128 * 1024 - (1 + sizeof(uint32_t));
+
 namespace p2pool {
 
-BlockTemplate::BlockTemplate(p2pool* pool)
-	: m_pool(pool)
+BlockTemplate::BlockTemplate(SideChain* sidechain, RandomX_Hasher_Base* hasher)
+	: m_sidechain(sidechain)
+	, m_hasher(hasher)
 	, m_templateId(0)
+	, m_lastUpdated(seconds_since_epoch())
 	, m_blockHeaderSize(0)
 	, m_minerTxOffsetInTemplate(0)
 	, m_minerTxSize(0)
@@ -70,7 +75,8 @@ BlockTemplate::BlockTemplate(p2pool* pool)
 	m_merkleTreeMainBranch.reserve(HASH_SIZE * 10);
 	m_mempoolTxs.reserve(1024);
 	m_mempoolTxsOrder.reserve(1024);
-	m_shares.reserve(m_pool->side_chain().chain_window_size() * 2);
+	m_mempoolTxsOrder2.reserve(1024);
+	m_shares.reserve(m_sidechain->chain_window_size() * 2);
 
 	for (size_t i = 0; i < array_size(&BlockTemplate::m_oldTemplates); ++i) {
 		m_oldTemplates[i] = new BlockTemplate(*this);
@@ -108,8 +114,10 @@ BlockTemplate& BlockTemplate::operator=(const BlockTemplate& b)
 
 	WriteLock lock(m_lock);
 
-	m_pool = b.m_pool;
+	m_sidechain = b.m_sidechain;
+	m_hasher = b.m_hasher;
 	m_templateId = b.m_templateId;
+	m_lastUpdated = b.m_lastUpdated.load();
 	m_blockTemplateBlob = b.m_blockTemplateBlob;
 	m_merkleTreeMainBranch = b.m_merkleTreeMainBranch;
 	m_blockHeaderSize = b.m_blockHeaderSize;
@@ -135,6 +143,7 @@ BlockTemplate& BlockTemplate::operator=(const BlockTemplate& b)
 	m_rewards.clear();
 	m_mempoolTxs.clear();
 	m_mempoolTxsOrder.clear();
+	m_mempoolTxsOrder2.clear();
 	m_shares.clear();
 
 	m_rng = b.m_rng;
@@ -203,6 +212,7 @@ void BlockTemplate::update(const MinerData& data, const Mempool& mempool, Wallet
 	}
 
 	++m_templateId;
+	m_lastUpdated = seconds_since_epoch();
 
 	// When block template generation fails for any reason
 	auto use_old_template = [this]() {
@@ -216,54 +226,6 @@ void BlockTemplate::update(const MinerData& data, const Mempool& mempool, Wallet
 	m_height = data.height;
 	m_difficulty = data.difficulty;
 	m_seedHash = data.seed_hash;
-
-	// Only choose transactions that were received 10 or more seconds ago
-	size_t total_mempool_transactions;
-	{
-		m_mempoolTxs.clear();
-
-		ReadLock mempool_lock(mempool.m_lock);
-
-		total_mempool_transactions = mempool.m_transactions.size();
-
-		const uint64_t cur_time = seconds_since_epoch();
-
-		for (auto& it : mempool.m_transactions) {
-			if (cur_time >= it.second.time_received + 10) {
-				m_mempoolTxs.emplace_back(it.second);
-			}
-		}
-	}
-
-	// Safeguard for busy mempool moments
-	// If the block template gets too big, nodes won't be able to send and receive it because of p2p packet size limit
-	// Select 1000 transactions with the highest fee per byte
-	if (m_mempoolTxs.size() > 1000) {
-		std::nth_element(m_mempoolTxs.begin(), m_mempoolTxs.begin() + 1000, m_mempoolTxs.end(),
-			[](const TxMempoolData& tx_a, const TxMempoolData& tx_b)
-			{
-				return tx_a.fee * tx_b.weight > tx_b.fee * tx_a.weight;
-			});
-		m_mempoolTxs.resize(1000);
-	}
-
-	LOGINFO(4, "mempool has " << total_mempool_transactions << " transactions, taking " << m_mempoolTxs.size() << " transactions from it");
-
-	const uint64_t base_reward = get_base_reward(data.already_generated_coins);
-
-	uint64_t total_tx_fees = 0;
-	uint64_t total_tx_weight = 0;
-	for (const TxMempoolData& tx : m_mempoolTxs) {
-		total_tx_fees += tx.fee;
-		total_tx_weight += tx.weight;
-	}
-
-	const uint64_t max_reward = base_reward + total_tx_fees;
-
-	LOGINFO(3, "base  reward = " << log::Gray() << log::XMRAmount(base_reward) << log::NoColor() <<
-		", " << log::Gray() << m_mempoolTxs.size() << log::NoColor() <<
-		" transactions, fees = " << log::Gray() << log::XMRAmount(total_tx_fees) << log::NoColor() <<
-		", weight = " << log::Gray() << total_tx_weight);
 
 	m_blockHeader.clear();
 	m_poolBlockTemplate->m_verified = false;
@@ -296,7 +258,71 @@ void BlockTemplate::update(const MinerData& data, const Mempool& mempool, Wallet
 
 	m_blockHeaderSize = m_blockHeader.size();
 
-	m_pool->side_chain().fill_sidechain_data(*m_poolBlockTemplate, miner_wallet, m_txkeySec, m_shares);
+	m_sidechain->fill_sidechain_data(*m_poolBlockTemplate, miner_wallet, m_txkeySec, m_shares);
+
+	// Only choose transactions that were received 10 or more seconds ago
+	size_t total_mempool_transactions;
+	{
+		m_mempoolTxs.clear();
+
+		ReadLock mempool_lock(mempool.m_lock);
+
+		total_mempool_transactions = mempool.m_transactions.size();
+
+		const uint64_t cur_time = seconds_since_epoch();
+
+		for (auto& it : mempool.m_transactions) {
+			if (cur_time >= it.second.time_received + 10) {
+				m_mempoolTxs.emplace_back(it.second);
+			}
+		}
+	}
+
+	// Safeguard for busy mempool moments
+	// If the block template gets too big, nodes won't be able to send and receive it because of p2p packet size limit
+	// Calculate how many transactions we can take
+	{
+		PoolBlock* b = m_poolBlockTemplate;
+		b->m_transactions.clear();
+		b->m_transactions.resize(1);
+		b->m_outputs.clear();
+
+		// Block template size without coinbase outputs and transactions (add 1+1 more bytes for output and tx count if they go above 128)
+		size_t k = b->serialize_mainchain_data().size() + b->serialize_sidechain_data().size() + 2;
+
+		// a rough estimation of outputs' size
+		// all outputs have <= 5 bytes for each output's reward, and up to 18 outputs can have 6 bytes for output's reward
+		k += m_shares.size() * (5 /* reward */ + 1 /* tx_type */ + HASH_SIZE /* stealth address */ + 1 /* viewtag */) + 18;
+
+		const size_t max_transactions = (MAX_BLOCK_TEMPLATE_SIZE > k) ? ((MAX_BLOCK_TEMPLATE_SIZE - k) / HASH_SIZE) : 0;
+
+		if (max_transactions == 0) {
+			m_mempoolTxs.clear();
+		}
+		else if (m_mempoolTxs.size() > max_transactions) {
+			std::nth_element(m_mempoolTxs.begin(), m_mempoolTxs.begin() + max_transactions, m_mempoolTxs.end());
+			m_mempoolTxs.resize(max_transactions);
+		}
+
+		LOGINFO(4, "mempool has " << total_mempool_transactions << " transactions, taking " << m_mempoolTxs.size() << " transactions from it");
+	}
+
+	const uint64_t base_reward = get_base_reward(data.already_generated_coins);
+
+	uint64_t total_tx_fees = 0;
+	uint64_t total_tx_weight = 0;
+	for (const TxMempoolData& tx : m_mempoolTxs) {
+		total_tx_fees += tx.fee;
+		total_tx_weight += tx.weight;
+	}
+
+	const uint64_t max_reward = base_reward + total_tx_fees;
+
+	LOGINFO(3, "base  reward = " << log::Gray() << log::XMRAmount(base_reward) << log::NoColor() <<
+		", " << log::Gray() << m_mempoolTxs.size() << log::NoColor() <<
+		" transactions, fees = " << log::Gray() << log::XMRAmount(total_tx_fees) << log::NoColor() <<
+		", weight = " << log::Gray() << total_tx_weight);
+
 	if (!SideChain::split_reward(max_reward, m_shares, m_rewards)) {
 		use_old_template();
 		return;
@@ -336,8 +362,14 @@ void BlockTemplate::update(const MinerData& data, const Mempool& mempool, Wallet
 
 		m_numTransactionHashes = m_mempoolTxsOrder.size();
 		m_transactionHashes.assign(HASH_SIZE, 0);
+		m_transactionHashesSet.clear();
+		m_transactionHashesSet.reserve(m_mempoolTxsOrder.size());
 		for (size_t i = 0; i < m_mempoolTxsOrder.size(); ++i) {
 			const TxMempoolData& tx = m_mempoolTxs[m_mempoolTxsOrder[i]];
+			if (!m_transactionHashesSet.insert(tx.id).second) {
+				LOGERR(1, "Added transaction " << tx.id << " twice. Fix the code!");
+				continue;
+			}
 			m_transactionHashes.insert(m_transactionHashes.end(), tx.id.h, tx.id.h + HASH_SIZE);
 			final_fees += tx.fee;
 			final_weight += tx.weight;
@@ -353,19 +385,14 @@ void BlockTemplate::update(const MinerData& data, const Mempool& mempool, Wallet
 		// Sometimes it even finds the optimal solution
 
 		// Sort all transactions by fee per byte (highest to lowest)
-		std::sort(m_mempoolTxsOrder.begin(), m_mempoolTxsOrder.end(),
-			[this](int a, int b)
-			{
-				const TxMempoolData& tx_a = m_mempoolTxs[a];
-				const TxMempoolData& tx_b = m_mempoolTxs[b];
-				return tx_a.fee * tx_b.weight > tx_b.fee * tx_a.weight;
-			});
+		std::sort(m_mempoolTxsOrder.begin(), m_mempoolTxsOrder.end(), [this](int a, int b) { return m_mempoolTxs[a] < m_mempoolTxs[b]; });
 
 		final_reward = base_reward;
 		final_fees = 0;
 		final_weight = miner_tx_weight;
 
-		for (int i = 0; i < static_cast<int>(m_mempoolTxsOrder.size());) {
+		m_mempoolTxsOrder2.clear();
+		for (int i = 0; i < static_cast<int>(m_mempoolTxsOrder.size()); ++i) {
 			const TxMempoolData& tx = m_mempoolTxs[m_mempoolTxsOrder[i]];
 
 			int k = -1;
@@ -379,8 +406,10 @@ void BlockTemplate::update(const MinerData& data, const Mempool& mempool, Wallet
 
 			// Try replacing other transactions when we are above the limit
 			if (final_weight + tx.weight > data.median_weight) {
-				for (int j = 0; j < i; ++j) {
-					const TxMempoolData& prev_tx = m_mempoolTxs[m_mempoolTxsOrder[j]];
+				// Don't check more than 100 transactions deep because they have higher and higher fee/byte
+				const int n = static_cast<int>(m_mempoolTxsOrder2.size());
+				for (int j = n - 1, j1 = std::max<int>(0, n - 100); j >= j1; --j) {
+					const TxMempoolData& prev_tx = m_mempoolTxs[m_mempoolTxsOrder2[j]];
 					const uint64_t reward2 = get_block_reward(base_reward, data.median_weight, final_fees + tx.fee - prev_tx.fee, final_weight + tx.weight - prev_tx.weight);
 					if (reward2 > final_reward) {
 						// If replacing some other transaction increases the reward even more, remember it
@@ -393,21 +422,19 @@ void BlockTemplate::update(const MinerData& data, const Mempool& mempool, Wallet
 
 			if (k == i) {
 				// Simply adding this tx improves the reward
+				m_mempoolTxsOrder2.push_back(m_mempoolTxsOrder[i]);
 				final_fees += tx.fee;
 				final_weight += tx.weight;
-				++i;
-				continue;
 			}
-
-			if (k >= 0) {
+			else if (k >= 0) {
 				// Replacing another tx with this tx improves the reward
-				const TxMempoolData& prev_tx = m_mempoolTxs[m_mempoolTxsOrder[k]];
+				const TxMempoolData& prev_tx = m_mempoolTxs[m_mempoolTxsOrder2[k]];
+				m_mempoolTxsOrder2[k] = m_mempoolTxsOrder[i];
 				final_fees += tx.fee - prev_tx.fee;
 				final_weight += tx.weight - prev_tx.weight;
 			}
-
-			m_mempoolTxsOrder.erase(m_mempoolTxsOrder.begin() + ((k >= 0) ? k : i));
 		}
+		m_mempoolTxsOrder = m_mempoolTxsOrder2;
 
 		final_fees = 0;
 		final_weight = miner_tx_weight;
@@ -416,8 +443,14 @@ void BlockTemplate::update(const MinerData& data, const Mempool& mempool, Wallet
 
 		m_numTransactionHashes = m_mempoolTxsOrder.size();
 		m_transactionHashes.assign(HASH_SIZE, 0);
+		m_transactionHashesSet.clear();
+		m_transactionHashesSet.reserve(m_mempoolTxsOrder.size());
 		for (size_t i = 0; i < m_mempoolTxsOrder.size(); ++i) {
 			const TxMempoolData& tx = m_mempoolTxs[m_mempoolTxsOrder[i]];
+			if (!m_transactionHashesSet.insert(tx.id).second) {
+				LOGERR(1, "Added transaction " << tx.id << " twice. Fix the code!");
+				continue;
+			}
 			m_transactionHashes.insert(m_transactionHashes.end(), tx.id.h, tx.id.h + HASH_SIZE);
 			final_fees += tx.fee;
 			final_weight += tx.weight;
@@ -565,7 +598,7 @@ void BlockTemplate::update(const MinerData& data, const Mempool& mempool, Wallet
 		buf.insert(buf.end(), sidechain_data.begin(), sidechain_data.end());
 
 		PoolBlock check;
-		const int result = check.deserialize(buf.data(), buf.size(), m_pool->side_chain(), nullptr);
+		const int result = check.deserialize(buf.data(), buf.size(), *m_sidechain, nullptr, false);
 		if (result != 0) {
 			LOGERR(1, "pool block blob generation and/or parsing is broken, error " << result);
 		}
@@ -591,9 +624,11 @@ void BlockTemplate::update(const MinerData& data, const Mempool& mempool, Wallet
 	m_blockHeader.clear();
 	m_minerTxExtra.clear();
 	m_transactionHashes.clear();
+	m_transactionHashesSet.clear();
 	m_rewards.clear();
 	m_mempoolTxs.clear();
 	m_mempoolTxsOrder.clear();
+	m_mempoolTxsOrder2.clear();
 }
 
 #if TEST_MEMPOOL_PICKING_ALGORITHM
@@ -800,7 +835,7 @@ hash BlockTemplate::calc_sidechain_hash() const
 	const int sidechain_hash_offset = static_cast<int>(m_extraNonceOffsetInTemplate + m_poolBlockTemplate->m_extraNonceSize) + 2;
 	const int blob_size = static_cast<int>(m_blockTemplateBlob.size());
 
-	const std::vector<uint8_t>& consensus_id = m_pool->side_chain().consensus_id();
+	const std::vector<uint8_t>& consensus_id = m_sidechain->consensus_id();
 	const std::vector<uint8_t> sidechain_data = m_poolBlockTemplate->serialize_sidechain_data();
 
 	keccak_custom([this, sidechain_hash_offset, blob_size, consensus_id, &sidechain_data](int offset) -> uint8_t {
@@ -928,12 +963,13 @@ void BlockTemplate::calc_merkle_tree_main_branch()
 	}
 }
 
-bool BlockTemplate::get_difficulties(const uint32_t template_id, uint64_t& height, difficulty_type& mainchain_difficulty, difficulty_type& sidechain_difficulty) const
+bool BlockTemplate::get_difficulties(const uint32_t template_id, uint64_t& height, uint64_t& sidechain_height, difficulty_type& mainchain_difficulty, difficulty_type& sidechain_difficulty) const
 {
 	ReadLock lock(m_lock);
 
 	if (template_id == m_templateId) {
 		height = m_height;
+		sidechain_height = m_poolBlockTemplate->m_sidechainHeight;
 		mainchain_difficulty = m_difficulty;
 		sidechain_difficulty = m_poolBlockTemplate->m_difficulty;
 		return true;
@@ -942,7 +978,7 @@ bool BlockTemplate::get_difficulties(const uint32_t template_id, uint64_t& heigh
 	const BlockTemplate* old = m_oldTemplates[template_id % array_size(&BlockTemplate::m_oldTemplates)];
 
 	if (old && (template_id == old->m_templateId)) {
-		return old->get_difficulties(template_id, height, mainchain_difficulty, sidechain_difficulty);
+		return old->get_difficulties(template_id, height, sidechain_height, mainchain_difficulty, sidechain_difficulty);
 	}
 
 	return false;
@@ -971,11 +1007,12 @@ uint32_t BlockTemplate::get_hashing_blob(const uint32_t template_id, uint32_t ex
 	return 0;
 }
 
-uint32_t BlockTemplate::get_hashing_blob(uint32_t extra_nonce, uint8_t (&blob)[128], uint64_t& height, difficulty_type& difficulty, difficulty_type& sidechain_difficulty, hash& seed_hash, size_t& nonce_offset, uint32_t& template_id) const
+uint32_t BlockTemplate::get_hashing_blob(uint32_t extra_nonce, uint8_t (&blob)[128], uint64_t& height, uint64_t& sidechain_height, difficulty_type& difficulty, difficulty_type& sidechain_difficulty, hash& seed_hash, size_t& nonce_offset, uint32_t& template_id) const
 {
 	ReadLock lock(m_lock);
 
 	height = m_height;
+	sidechain_height = m_poolBlockTemplate->m_sidechainHeight;
 	difficulty = m_difficulty;
 	sidechain_difficulty = m_poolBlockTemplate->m_difficulty;
 	seed_hash = m_seedHash;
@@ -1086,8 +1123,6 @@ void BlockTemplate::submit_sidechain_block(uint32_t template_id, uint32_t nonce,
 		m_poolBlockTemplate->m_nonce = nonce;
 		m_poolBlockTemplate->m_extraNonce = extra_nonce;
 
-		SideChain& side_chain = m_pool->side_chain();
-
 #if POOL_BLOCK_DEBUG
 		{
 			std::vector<uint8_t> buf = m_poolBlockTemplate->serialize_mainchain_data();
@@ -1099,25 +1134,27 @@ void BlockTemplate::submit_sidechain_block(uint32_t template_id, uint32_t nonce,
 			buf.insert(buf.end(), sidechain_data.begin(), sidechain_data.end());
 
 			PoolBlock check;
-			const int result = check.deserialize(buf.data(), buf.size(), side_chain, nullptr);
+			const int result = check.deserialize(buf.data(), buf.size(), *m_sidechain, nullptr, false);
 			if (result != 0) {
 				LOGERR(1, "pool block blob generation and/or parsing is broken, error " << result);
 			}
 
-			hash pow_hash;
-			if (!check.get_pow_hash(m_pool->hasher(), check.m_txinGenHeight, m_seedHash, pow_hash)) {
-				LOGERR(1, "PoW check failed for the sidechain block. Fix it! ");
-			}
-			else if (!check.m_difficulty.check_pow(pow_hash)) {
-				LOGERR(1, "Sidechain block has wrong PoW. Fix it! ");
+			if (m_hasher) {
+				hash pow_hash;
+				if (!check.get_pow_hash(m_hasher, check.m_txinGenHeight, m_seedHash, pow_hash)) {
+					LOGERR(1, "PoW check failed for the sidechain block. Fix it! ");
+				}
+				else if (!check.m_difficulty.check_pow(pow_hash)) {
+					LOGERR(1, "Sidechain block has wrong PoW. Fix it! ");
+				}
 			}
 		}
 #endif
 
 		m_poolBlockTemplate->m_verified = true;
-		if (!side_chain.block_seen(*m_poolBlockTemplate)) {
+		if (!m_sidechain->block_seen(*m_poolBlockTemplate)) {
 			m_poolBlockTemplate->m_wantBroadcast = true;
-			side_chain.add_block(*m_poolBlockTemplate);
+			m_sidechain->add_block(*m_poolBlockTemplate);
 		}
 		return;
 	}

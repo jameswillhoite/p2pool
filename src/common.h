@@ -19,7 +19,7 @@
 
 #ifdef _MSC_VER
 
-#pragma warning(disable : 4005 4061 4365 4464 4625 4626 4668 4710 4711 4804 4820 5039 5045 5220 5246)
+#pragma warning(disable : 4005 4061 4324 4365 4464 4625 4626 4668 4710 4711 4804 4820 5039 5045 5220 5246)
 #define FORCEINLINE __forceinline
 #define NOINLINE __declspec(noinline)
 #define LIKELY(expression) expression
@@ -109,6 +109,8 @@ constexpr uint8_t TX_EXTRA_MERGE_MINING_TAG = 3;
 #ifdef _MSC_VER
 #define umul128 _umul128
 #define udiv128 _udiv128
+FORCEINLINE uint64_t shiftleft128(uint64_t lo, uint64_t hi, uint64_t shift) { return __shiftleft128(lo, hi, static_cast<unsigned char>(shift)); }
+FORCEINLINE uint64_t shiftright128(uint64_t lo, uint64_t hi, uint64_t shift) { return __shiftright128(lo, hi, static_cast<unsigned char>(shift)); }
 #else
 FORCEINLINE uint64_t umul128(uint64_t a, uint64_t b, uint64_t* hi)
 {
@@ -126,13 +128,16 @@ FORCEINLINE uint64_t udiv128(uint64_t hi, uint64_t lo, uint64_t divisor, uint64_
 
 	return result;
 }
+
+FORCEINLINE uint64_t shiftleft128(uint64_t lo, uint64_t hi, uint64_t shift) { return (hi << shift) | (lo >> (64 - shift)); }
+FORCEINLINE uint64_t shiftright128(uint64_t lo, uint64_t hi, uint64_t shift) { return (hi << (64 - shift)) | (lo >> shift); }
 #endif
 
-template<typename T> FORCEINLINE T round_up(T a, size_t granularity) { return static_cast<T>(((a + (granularity - static_cast<size_t>(1))) / granularity) * granularity); }
+template<typename T> constexpr FORCEINLINE T round_up(T a, size_t granularity) { return static_cast<T>(((a + (granularity - static_cast<size_t>(1))) / granularity) * granularity); }
 
-struct hash
+struct alignas(uint64_t) hash
 {
-	alignas(8) uint8_t h[HASH_SIZE];
+	uint8_t h[HASH_SIZE];
 
 	FORCEINLINE hash() : h{} {}
 
@@ -174,7 +179,11 @@ struct hash
 static_assert(sizeof(hash) == HASH_SIZE, "struct hash has invalid size, check your compiler options");
 static_assert(std::is_standard_layout<hash>::value, "struct hash is not a POD, check your compiler options");
 
-struct difficulty_type
+struct
+#ifdef __GNUC__
+	alignas(unsigned __int128)
+#endif
+	difficulty_type
 {
 	FORCEINLINE difficulty_type() : lo(0), hi(0) {}
 	FORCEINLINE difficulty_type(uint64_t a, uint64_t b) : lo(a), hi(b) {}
@@ -196,6 +205,47 @@ struct difficulty_type
 #endif
 		return *this;
 	}
+
+	FORCEINLINE difficulty_type& operator+=(uint64_t b) { return operator+=(difficulty_type{ b, 0 }); }
+
+	FORCEINLINE difficulty_type& operator-=(const difficulty_type& b)
+	{
+#ifdef _MSC_VER
+		_subborrow_u64(_subborrow_u64(0, lo, b.lo, &lo), hi, b.hi, &hi);
+#elif __GNUC__
+		*reinterpret_cast<unsigned __int128*>(this) -= *reinterpret_cast<const unsigned __int128*>(&b);
+#else
+		const uint64_t t = b.lo;
+		const uint64_t carry = (lo < t) ? 1 : 0;
+		lo -= t;
+		hi -= b.hi + carry;
+#endif
+		return *this;
+	}
+
+	FORCEINLINE difficulty_type& operator-=(uint64_t b) { return operator-=(difficulty_type{ b, 0 }); }
+
+	FORCEINLINE difficulty_type& operator*=(const uint64_t b)
+	{
+		uint64_t t;
+		lo = umul128(lo, b, &t);
+		hi = t + hi * b;
+
+		return *this;
+	}
+
+	FORCEINLINE difficulty_type& operator/=(const uint64_t b)
+	{
+		const uint64_t t = hi;
+		hi = t / b;
+
+		uint64_t r;
+		lo = udiv128(t % b, lo, b, &r);
+
+		return *this;
+	}
+
+	difficulty_type& operator/=(difficulty_type b);
 
 	FORCEINLINE bool operator<(const difficulty_type& other) const
 	{
@@ -244,11 +294,57 @@ struct difficulty_type
 static_assert(sizeof(difficulty_type) == sizeof(uint64_t) * 2, "struct difficulty_type has invalid size, check your compiler options");
 static_assert(std::is_standard_layout<difficulty_type>::value, "struct difficulty_type is not a POD, check your compiler options");
 
-difficulty_type operator+(const difficulty_type& a, const difficulty_type& b);
+template<typename T>
+FORCEINLINE difficulty_type operator+(const difficulty_type& a, const T& b)
+{
+	difficulty_type result = a;
+	result += b;
+	return result;
+}
+
+template<typename T>
+FORCEINLINE difficulty_type operator-(const difficulty_type& a, const T& b)
+{
+	difficulty_type result = a;
+	result -= b;
+	return result;
+}
+
+FORCEINLINE difficulty_type operator*(const difficulty_type& a, uint64_t b)
+{
+	difficulty_type result = a;
+	result *= b;
+	return result;
+}
+
+template<typename T>
+FORCEINLINE difficulty_type operator/(const difficulty_type& a, const T& b)
+{
+	difficulty_type result = a;
+	result /= b;
+	return result;
+}
 
 struct TxMempoolData
 {
 	FORCEINLINE TxMempoolData() : id(), blob_size(0), weight(0), fee(0), time_received(0) {}
+
+	FORCEINLINE bool operator<(const TxMempoolData& tx) const
+	{
+		const uint64_t a = fee * tx.weight;
+		const uint64_t b = tx.fee * weight;
+
+		// Prefer transactions with higher fee/byte
+		if (a > b) return true;
+		if (a < b) return false;
+
+		// If fee/byte is the same, prefer smaller transactions (they give smaller penalty when going above the median block size limit)
+		if (weight < tx.weight) return true;
+		if (weight > tx.weight) return false;
+
+		// If two transactions have exactly the same fee and weight, just order them by id
+		return id < tx.id;
+	}
 
 	hash id;
 	uint64_t blob_size;
@@ -332,6 +428,12 @@ struct raw_ip
 		static constexpr raw_ip localhost_ipv6 = { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01 };
 
 		return (*this == localhost_ipv4) || (*this == localhost_ipv6);
+	}
+
+	FORCEINLINE bool is_ipv4_prefix() const
+	{
+		alignas(8) static constexpr uint8_t ipv4_prefix[12] = { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xff, 0xff };
+		return memcmp(data, ipv4_prefix, sizeof(ipv4_prefix)) == 0;
 	}
 };
 

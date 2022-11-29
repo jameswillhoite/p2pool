@@ -30,6 +30,11 @@ static constexpr size_t PEER_LIST_RESPONSE_MAX_PEERS = 16;
 static constexpr int DEFAULT_P2P_PORT = 37889;
 static constexpr int DEFAULT_P2P_PORT_MINI = 37888;
 
+static constexpr uint32_t PROTOCOL_VERSION_1_0 = 0x00010000UL;
+static constexpr uint32_t PROTOCOL_VERSION_1_1 = 0x00010001UL;
+
+static constexpr uint32_t SUPPORTED_PROTOCOL_VERSION = PROTOCOL_VERSION_1_1;
+
 class P2PServer : public TCPServer<P2P_BUF_SIZE, P2P_BUF_SIZE>
 {
 public:
@@ -42,6 +47,7 @@ public:
 		BLOCK_BROADCAST = 5,
 		PEER_LIST_REQUEST = 6,
 		PEER_LIST_RESPONSE = 7,
+		BLOCK_BROADCAST_COMPACT = 8,
 	};
 
 	explicit P2PServer(p2pool *pool);
@@ -94,11 +100,11 @@ public:
 		bool on_listen_port(const uint8_t* buf);
 		bool on_block_request(const uint8_t* buf);
 		bool on_block_response(const uint8_t* buf, uint32_t size);
-		bool on_block_broadcast(const uint8_t* buf, uint32_t size);
+		bool on_block_broadcast(const uint8_t* buf, uint32_t size, bool compact);
 		bool on_peer_list_request(const uint8_t* buf);
-		bool on_peer_list_response(const uint8_t* buf) const;
+		bool on_peer_list_response(const uint8_t* buf);
 
-		bool handle_incoming_block_async(const PoolBlock* block);
+		bool handle_incoming_block_async(const PoolBlock* block, uint64_t max_time_delta = 0);
 		void handle_incoming_block(p2pool* pool, PoolBlock& block, const uint32_t reset_counter, const raw_ip& addr, std::vector<hash>& missing_blocks);
 		void post_handle_incoming_block(const uint32_t reset_counter, std::vector<hash>& missing_blocks);
 
@@ -117,6 +123,10 @@ public:
 		uint64_t m_nextOutgoingPeerListRequest;
 		std::chrono::high_resolution_clock::time_point m_lastPeerListRequestTime;
 		int m_peerListPendingRequests;
+
+		uint32_t m_protocolVersion;
+		uint32_t m_P2PoolVersion;
+
 		int64_t m_pingTime;
 
 		int m_blockPendingRequests;
@@ -130,7 +140,7 @@ public:
 		std::atomic<uint32_t> m_broadcastedHashesIndex{ 0 };
 	};
 
-	void broadcast(const PoolBlock& block);
+	void broadcast(const PoolBlock& block, const PoolBlock* parent);
 	uint64_t get_random64();
 	uint64_t get_peerId() const { return m_peerId; }
 
@@ -146,7 +156,7 @@ public:
 	void set_max_outgoing_peers(uint32_t n) { m_maxOutgoingPeers = std::min(std::max(n, 10U), 450U); }
 	void set_max_incoming_peers(uint32_t n) { m_maxIncomingPeers = std::min(std::max(n, 10U), 450U); }
 
-	int deserialize_block(const uint8_t* buf, uint32_t size);
+	int deserialize_block(const uint8_t* buf, uint32_t size, bool compact);
 	const PoolBlock* get_block() const { return m_block; }
 
 private:
@@ -167,6 +177,7 @@ private:
 	void flush_cache();
 	void download_missing_blocks();
 	void check_zmq();
+	void check_block_template();
 	void update_peer_connections();
 	void update_peer_list();
 	void send_peer_list_request(P2PClient* client, uint64_t cur_time);
@@ -178,7 +189,6 @@ private:
 	void remove_peer_from_list(P2PClient* client);
 	void remove_peer_from_list(const raw_ip& ip);
 
-	uv_mutex_t m_rngLock;
 	std::mt19937_64 m_rng;
 
 	uv_mutex_t m_blockLock;
@@ -211,6 +221,7 @@ private:
 	{
 		std::vector<uint8_t> blob;
 		std::vector<uint8_t> pruned_blob;
+		std::vector<uint8_t> compact_blob;
 		std::vector<hash> ancestor_hashes;
 	};
 

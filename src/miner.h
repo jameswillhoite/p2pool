@@ -56,7 +56,7 @@ private:
 
 	std::atomic<uint32_t> m_nonce;
 	std::chrono::high_resolution_clock::time_point m_nonceTimestamp;
-	const uint32_t m_extraNonce;
+	uint32_t m_extraNonce;
 
 	std::atomic<uint64_t> m_totalHashes;
 	std::atomic<uint32_t> m_sharesFound;
@@ -69,6 +69,7 @@ private:
 		difficulty_type m_diff = {};
 		difficulty_type m_sidechainDiff = {};
 		uint64_t m_height = 0;
+		uint64_t m_sidechainHeight = 0;
 		size_t m_nonceOffset = 0;
 		uint32_t m_nonce = 0;
 		uint32_t m_extraNonce = 0;
